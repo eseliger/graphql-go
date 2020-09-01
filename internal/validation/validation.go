@@ -976,17 +976,6 @@ func getEntryPoint(s *schema.Schema, op *query.Operation) schema.NamedType {
 	return entryPoint
 }
 
-type visitedSels map[string]int
-
-func (s visitedSels) copy() visitedSels {
-	newSels := visitedSels{}
-	for index, value := range s {
-		newSels[index] = value
-	}
-
-	return newSels
-}
-
 func estimateCost(c *opContext, sels []query.Selection, t schema.NamedType) int {
 	return estimateCostImpl(c, sels, t, 1)
 }

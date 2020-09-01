@@ -11,6 +11,7 @@ const (
 	simpleCostSchema = `
 directive @cost(
 	complexity: Int!
+	multipliers: [String!]
 ) on SCHEMA |
 SCALAR |
 OBJECT |
@@ -28,52 +29,24 @@ INPUT_FIELD_DEFINITION
 	}
 
 	type Query {
-		characters: [Character]! @cost(complexity: 1)
+		characters: [FriendOrEnemy]! @cost(complexity: 1)
 	}
 
-	type Character {
-		id: ID!
-		name: String!
-		friends: [Character]!
-	}`
-	interfaceCostSimple = `schema {
-		query: Query
-	}
-
-	type Query {
-		characters: [Character]
-	}
-
-	interface Character {
-		id: ID! @cost(complexity: 1)
+	interface Friend {
 		name: String! @cost(complexity: 1)
-		friends: [Character] @cost(complexity: 1)
-		appearsIn: [Episode]!
 	}
 
-	enum Episode {
-		NEWHOPE
-		EMPIRE
-		JEDI
-	}
-
-	type Starship {}
-
-	type Human implements Character {
-		id: ID!
+	type Enemy {
 		name: String!
-		friends: [Character]
-		appearsIn: [Episode]!
-		starships: [Starship]
-		totalCredits: Int
+		weapon: String! @cost(complexity: 9)
 	}
 
-	type Droid implements Character {
-		id: ID!
-		name: String!
-		friends: [Character]
-		appearsIn: [Episode]!
-		primaryFunction: String
+	union FriendOrEnemy = Character | Enemy
+
+	type Character implements Friend {
+		id: ID! @cost(complexity: 1)
+		name: String! @cost(complexity: 2)
+		friends(first: Int, last: Int): [Friend]! @cost(multipliers: ["first", "last"])
 	}`
 )
 
@@ -112,48 +85,68 @@ func TestCost(t *testing.T) {
 	for _, tc := range []costTestCase{
 		{
 			name: "off",
-			query: `query Okay {        # depth 0
-			characters {         # depth 1
-			  id                 # depth 2
-			  name               # depth 2
-			  friends {          # depth 2
-					friends {    # depth 3
-					  friends {  # depth 4
-						  id       # depth 5
-						  name     # depth 5
+			query: `
+			query Okay {
+				characters {
+				  ... on Character {
+				  id
+				  name
+				  friends(first: 4, last: 2) {
+					... on Character {
+					  friends {
+						... on Character {
+						  friends {
+							...friendsFields
+						  }
+						}
 					  }
+					}
 				  }
+				  }
+				  ...enemyFields
+				}
 			  }
-			}
-		}`,
-			wantCost: 8,
-		}, {
-			name: "maxDepth-1",
-			query: `query Fine {        # depth 0
-				characters {         # depth 1
-				  id                 # depth 2
-				  name               # depth 2
-				  friends {          # depth 2
-					  id               # depth 3
-					  name             # depth 3
-				  }
-				}
-			}`,
-			wantCost: 6,
-		}, {
-			name: "maxDepth",
-			query: `query Deep {        # depth 0
-				characters {         # depth 1
-				  id                 # depth 2
-				  name               # depth 2
-				  friends {          # depth 2
-					  id               # depth 3
-					  name             # depth 3
-				  }
-				}
-			}`,
-			wantCost: 6,
+			  
+			  fragment friendsFields on Character {
+				id
+				name
+			  }
+
+			  fragment enemyFields on Enemy {
+				  name
+				  weapon
+			  }
+			  
+		`,
+			wantCost: 15,
 		},
+		//  {
+		// 	name: "maxDepth-1",
+		// 	query: `query Fine {        # depth 0
+		// 		characters {         # depth 1
+		// 		  id                 # depth 2
+		// 		  name               # depth 2
+		// 		  friends {          # depth 2
+		// 			  id               # depth 3
+		// 			  name             # depth 3
+		// 		  }
+		// 		}
+		// 	}`,
+		// 	wantCost: 6,
+		// }, {
+		// 	name: "maxDepth",
+		// 	query: `query Deep {        # depth 0
+		// 		characters {         # depth 1
+		// 		  id                 # depth 2
+		// 		  name               # depth 2
+		// 		  friends {          # depth 2
+		// 			  id               # depth 3
+		// 			  name             # depth 3
+		// 		  }
+		// 		}
+		// 	}`,
+		// 	wantCost: 6,
+		// },
 		//  {
 		// 	name: "maxDepth+1",
 		// 	query: `query TooDeep {        # depth 0

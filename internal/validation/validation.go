@@ -611,6 +611,8 @@ func unwrapType(t common.Type) schema.NamedType {
 		switch t2 := t.(type) {
 		case schema.NamedType:
 			return t2
+		case *schema.Union:
+			return t2
 		case *common.List:
 			t = t2.OfType
 		case *common.NonNull:
@@ -987,6 +989,20 @@ func (s visitedSels) copy() visitedSels {
 
 func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t schema.NamedType) int {
 	fields := fields(t)
+
+	isUnion := false
+	unionNames := make([]string, 0)
+	if union, ok := t.(*schema.Union); ok {
+		isUnion = true
+		for _, t := range union.PossibleTypes {
+			unionNames = append(unionNames, t.Name)
+		}
+	}
+	if len(unionNames) > 0 {
+		fmt.Printf("Union names: %+v\n", unionNames)
+	}
+
+	unionCosts := make([]int, 0)
 	cost := 0
 	for _, sel := range sels {
 		switch sel := sel.(type) {
@@ -996,16 +1012,30 @@ func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t s
 			case "__typename", "__type", "__schema":
 				continue
 			}
-			if len(sel.Selections) == 0 {
-				continue
-			}
-			var fieldCost int32
+			var fieldCost int32 = 0
+			var multiplier int32 = 1
+
 			if f := fields.Get(fieldName); f != nil {
 				if d := f.Directives.Get("cost"); d != nil {
-					if complexity, ok := d.Args.Get("complexity"); ok {
+					if complexity, ok := d.Args.Get("complexity"); ok && complexity != nil {
 						fc := complexity.Value(map[string]interface{}{})
 						fieldCost = fc.(int32)
-						fmt.Printf("######## FOUND complexity = %d on field %q\n", fieldCost, fieldName)
+					}
+					if m, ok := d.Args.Get("multipliers"); ok && m != nil {
+						mps := m.Value(map[string]interface{}{})
+						multipliers := mps.([]interface{})
+						hasMultiplier := false
+						for _, m := range multipliers {
+							parsedM := m.(string)
+							if arg, ok := sel.Arguments.Get(parsedM); ok {
+								hasMultiplier = true
+								v := arg.Value(map[string]interface{}{})
+								multiplier += v.(int32)
+							}
+						}
+						if hasMultiplier {
+							multiplier--
+						}
 					}
 				}
 				v := visited.copy()
@@ -1021,22 +1051,44 @@ func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t s
 					c.addErr(sel.Alias.Loc, "MaxDepthRecursionExceeded",
 						"The query exceeds the maximum depth recursion of %d. Actual is %d.",
 						100, currentDepth)
-
+					println("##################### returned crap")
 					return -1
 				}
-
-				cost += estimateCost(c, sel.Selections, v, unwrapType(f.Type)) + int(fieldCost)
+				childCost := estimateCost(c, sel.Selections, v, unwrapType(f.Type))
+				oldCost := cost
+				cost += (childCost + int(fieldCost)) * int(multiplier)
+				fmt.Printf("Field: %q, Field cost: %d, multiplier: %d, child cost: %d, old cost: %d, new cost: %d\n", f.Name, fieldCost, multiplier, childCost, oldCost, cost)
 			}
 		case *query.InlineFragment:
-			cost += estimateCost(c, sel.Selections, visited, unwrapType(t))
+			frag := c.schema.Types[sel.On.Name]
+			if frag == nil {
+				fmt.Printf(" NO INLINE FRAG FOUND %q\n", sel.On.Name)
+			}
+			cost += estimateCost(c, sel.Selections, visited, frag)
 		case *query.FragmentSpread:
 			frag := c.doc.Fragments.Get(sel.Name.Name)
 			if frag == nil {
+				println("####################### OG NO")
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.Name.Name)
 				continue
 			}
+			fmt.Printf("Fragment type: %+v, fragment name: %q\n", c.schema.Types[frag.On.Name], frag.On.Name)
 			cost += estimateCost(c, frag.Selections, visited, c.schema.Types[frag.On.Name])
 		}
+		if isUnion {
+			unionCosts = append(unionCosts, cost)
+			cost = 0
+		}
+	}
+	if isUnion {
+		maxCost := 0
+		for _, c := range unionCosts {
+			if c > maxCost {
+				maxCost = c
+			}
+		}
+		fmt.Printf("Was union, returning biggest potential cost. maxCost=%d, unionCosts=%+v\n", maxCost, unionCosts)
+		return maxCost
 	}
 	return cost
 }

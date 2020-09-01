@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"text/scanner"
@@ -989,18 +990,21 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 	cost := 0
 
 	directlyAccessedUnionFields := make([]query.Selection, 0)
-	if isUnion {
-		for _, sel := range sels {
-			if s, ok := sel.(*query.Field); ok {
-				directlyAccessedUnionFields = append(directlyAccessedUnionFields, s)
-			}
+
+	// Sort the selection to always process all fields first, to be sure
+	// that all directlyAccessedUnionFields have been visited by the time a fragment occurs.
+	sort.Slice(sels, func(i, j int) bool {
+		if _, ok := sels[i].(*query.Field); ok {
+			return true
 		}
-	}
+		return false
+	})
 
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *query.Field:
 			if isUnion {
+				directlyAccessedUnionFields = append(directlyAccessedUnionFields, sel)
 				continue
 			}
 			fieldName := sel.Name.Name
@@ -1030,10 +1034,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 					}
 				}
 				if d != nil {
-					if complexity, ok := d.Args.Get("complexity"); ok && complexity != nil {
-						fc := complexity.Value(map[string]interface{}{})
-						fieldCost = fc.(int32)
-					}
+					fieldCost = readComplexity(d)
 					if m, ok := d.Args.Get("multipliers"); ok && m != nil {
 						mps := m.Value(map[string]interface{}{})
 						multipliers := mps.([]interface{})
@@ -1050,10 +1051,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 							multiplier--
 						}
 					}
-					if m, ok := d.Args.Get("useMultipliers"); ok && m != nil {
-						mps := m.Value(map[string]interface{}{})
-						useMultipliers = mps.(bool)
-					}
+					useMultipliers = readUseMultipliers(d)
 				}
 
 				childCost := estimateCostImpl(c, sel.Selections, unwrapType(f.Type), int(multiplier))
@@ -1108,4 +1106,22 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 		return maxCost
 	}
 	return cost
+}
+
+func readComplexity(d *common.Directive) int32 {
+	if complexity, ok := d.Args.Get("complexity"); ok && complexity != nil {
+		fc := complexity.Value(map[string]interface{}{})
+		return fc.(int32)
+	}
+	// Default to 0.
+	return 0
+}
+
+func readUseMultipliers(d *common.Directive) bool {
+	if m, ok := d.Args.Get("useMultipliers"); ok && m != nil {
+		mps := m.Value(map[string]interface{}{})
+		return mps.(bool)
+	}
+	// The default is true.
+	return true
 }

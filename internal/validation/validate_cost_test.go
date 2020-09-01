@@ -13,17 +13,7 @@ directive @cost(
 	complexity: Int!
 	multipliers: [String!]
 	useMultipliers: Boolean = true
-) on SCHEMA |
-SCALAR |
-OBJECT |
-FIELD_DEFINITION |
-ARGUMENT_DEFINITION |
-INTERFACE |
-UNION |
-ENUM |
-ENUM_VALUE |
-INPUT_OBJECT |
-INPUT_FIELD_DEFINITION
+) on SCHEMA | SCALAR | OBJECT | FIELD_DEFINITION | ARGUMENT_DEFINITION | INTERFACE | UNION | ENUM | ENUM_VALUE | INPUT_OBJECT | INPUT_FIELD_DEFINITION
 
 	schema {
 		query: Query
@@ -232,6 +222,40 @@ func TestCost(t *testing.T) {
 			  }
 		`,
 			wantCost: (9) + 1,
+		},
+		{
+			name: "takes complexity for whole union when also querying fields outside of fragment",
+			query: `
+			query {
+				characters {
+				  name
+				  ... on Character {
+					  id
+				  }
+				  ... on Enemy {
+					  weapon
+				  }
+				}
+			  }
+		`,
+			wantCost: (9) + (1) + 1,
+		},
+		{
+			name: "takes complexity for whole union when also querying fields outside of fragment, below",
+			query: `
+			query {
+				characters {
+					... on Character {
+						id
+					}
+					... on Enemy {
+						weapon
+					}
+					name
+				}
+			  }
+		`,
+			wantCost: (9) + (1) + 1,
 		},
 	} {
 		tc.Run(t, s)

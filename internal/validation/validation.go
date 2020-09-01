@@ -72,9 +72,16 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 		c.usedVars[op] = make(varSet)
 		opc := &opContext{c, []*query.Operation{op}}
 
+		entryPoint := getEntryPoint(s, op)
+
 		// Check if max depth is exceeded, if it's set. If max depth is exceeded,
 		// don't continue to validate the document and exit early.
 		if validateMaxDepth(opc, op.Selections, 1) {
+			return c.errs
+		}
+
+		if cost := estimateCost(opc, op.Selections, map[string]int{}, getEntryPoint(c.schema, op)); cost > 100 {
+			c.addErr(op.Loc, "MaxDepthExceeded", "The query cost is too high. Permitted: %d, was: %d", 100, cost)
 			return c.errs
 		}
 
@@ -110,18 +117,6 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 					}
 				}
 			}
-		}
-
-		var entryPoint schema.NamedType
-		switch op.Type {
-		case query.Query:
-			entryPoint = s.EntryPoints["query"]
-		case query.Mutation:
-			entryPoint = s.EntryPoints["mutation"]
-		case query.Subscription:
-			entryPoint = s.EntryPoints["subscription"]
-		default:
-			panic("unreachable")
 		}
 
 		validateSelectionSet(opc, op.Selections, entryPoint)
@@ -961,4 +956,87 @@ func typeCanBeUsedAs(t, as common.Type) bool {
 		}
 	}
 	return false
+}
+
+func getEntryPoint(s *schema.Schema, op *query.Operation) schema.NamedType {
+	var entryPoint schema.NamedType
+	switch op.Type {
+	case query.Query:
+		entryPoint = s.EntryPoints["query"]
+	case query.Mutation:
+		entryPoint = s.EntryPoints["mutation"]
+	case query.Subscription:
+		entryPoint = s.EntryPoints["subscription"]
+	default:
+		panic("unreachable")
+	}
+
+	return entryPoint
+}
+
+type visitedSels map[string]int
+
+func (s visitedSels) copy() visitedSels {
+	newSels := visitedSels{}
+	for index, value := range s {
+		newSels[index] = value
+	}
+
+	return newSels
+}
+
+func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t schema.NamedType) int {
+	fields := fields(t)
+	cost := 0
+	for _, sel := range sels {
+		switch sel := sel.(type) {
+		case *query.Field:
+			fieldName := sel.Name.Name
+			switch fieldName {
+			case "__typename", "__type", "__schema":
+				continue
+			}
+			if len(sel.Selections) == 0 {
+				continue
+			}
+			var fieldCost int32
+			if f := fields.Get(fieldName); f != nil {
+				if d := f.Directives.Get("cost"); d != nil {
+					if complexity, ok := d.Args.Get("complexity"); ok {
+						fc := complexity.Value(map[string]interface{}{})
+						fieldCost = fc.(int32)
+						fmt.Printf("######## FOUND complexity = %d on field %q\n", fieldCost, fieldName)
+					}
+				}
+				v := visited.copy()
+
+				if depth, ok := v[f.Type.String()]; ok {
+					v[f.Type.String()] = depth + 1
+				} else {
+					v[f.Type.String()] = 1
+				}
+
+				currentDepth := v[f.Type.String()]
+				if currentDepth > 100 {
+					c.addErr(sel.Alias.Loc, "MaxDepthRecursionExceeded",
+						"The query exceeds the maximum depth recursion of %d. Actual is %d.",
+						100, currentDepth)
+
+					return -1
+				}
+
+				cost += estimateCost(c, sel.Selections, v, unwrapType(f.Type)) + int(fieldCost)
+			}
+		case *query.InlineFragment:
+			cost += estimateCost(c, sel.Selections, visited, unwrapType(t))
+		case *query.FragmentSpread:
+			frag := c.doc.Fragments.Get(sel.Name.Name)
+			if frag == nil {
+				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.Name.Name)
+				continue
+			}
+			cost += estimateCost(c, frag.Selections, visited, c.schema.Types[frag.On.Name])
+		}
+	}
+	return cost
 }

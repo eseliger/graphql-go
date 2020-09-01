@@ -77,7 +77,7 @@ func (tc maxDepthTestCase) Run(t *testing.T, s *schema.Schema) {
 			t.Fatal(qErr)
 		}
 
-		errs := Validate(s, doc, nil, tc.depth)
+		errs := Validate(s, doc, nil, tc.depth, 10000000)
 		if len(tc.expectedErrors) > 0 {
 			if len(errs) > 0 {
 				for _, expected := range tc.expectedErrors {

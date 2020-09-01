@@ -12,6 +12,7 @@ const (
 directive @cost(
 	complexity: Int!
 	multipliers: [String!]
+	useMultipliers: Boolean = true
 ) on SCHEMA |
 SCALAR |
 OBJECT |
@@ -36,17 +37,23 @@ INPUT_FIELD_DEFINITION
 		name: String! @cost(complexity: 1)
 	}
 
-	type Enemy {
+	type Enemy implements Friend {
 		name: String!
 		weapon: String! @cost(complexity: 9)
 	}
 
 	union FriendOrEnemy = Character | Enemy
 
+	type FriendConnection {
+		totalCount: Int! @cost(complexity: 1, useMultipliers: false)
+		nodes: [Character!]!
+	}
+
 	type Character implements Friend {
 		id: ID! @cost(complexity: 1)
 		name: String! @cost(complexity: 2)
 		friends(first: Int, last: Int): [Friend]! @cost(multipliers: ["first", "last"])
+		bestFriends(first: Int): FriendConnection! @cost(multipliers: ["first"], complexity: 3)
 	}`
 )
 
@@ -67,7 +74,7 @@ func (tc costTestCase) Run(t *testing.T, s *schema.Schema) {
 		op := doc.Operations[0]
 		opc := &opContext{c, []*query.Operation{op}}
 
-		cost := estimateCost(opc, op.Selections, map[string]int{}, getEntryPoint(c.schema, op))
+		cost := estimateCost(opc, op.Selections, getEntryPoint(c.schema, op))
 		if have, want := cost, tc.wantCost; have != want {
 			t.Fatalf("Got incorrect cost estimate, have=%d want=%d", have, want)
 		}
@@ -84,19 +91,27 @@ func TestCost(t *testing.T) {
 
 	for _, tc := range []costTestCase{
 		{
-			name: "off",
+			name: "complex",
 			query: `
 			query Okay {
 				characters {
+				  name
 				  ... on Character {
 				  id
-				  name
 				  friends(first: 4, last: 2) {
 					... on Character {
 					  friends {
 						... on Character {
 						  friends {
 							...friendsFields
+							... on Character {
+								bestFriends(first: 2) {
+									totalCount
+									nodes {
+										...friendsFields
+									}
+								}
+							}
 						  }
 						}
 					  }
@@ -118,56 +133,121 @@ func TestCost(t *testing.T) {
 			  }
 			  
 		`,
-			wantCost: 15,
+			wantCost: 82,
 		},
-		//  {
-		// 	name: "maxDepth-1",
-		// 	query: `query Fine {        # depth 0
-		// 		characters {         # depth 1
-		// 		  id                 # depth 2
-		// 		  name               # depth 2
-		// 		  friends {          # depth 2
-		// 			  id               # depth 3
-		// 			  name             # depth 3
-		// 		  }
-		// 		}
-		// 	}`,
-		// 	wantCost: 6,
-		// }, {
-		// 	name: "maxDepth",
-		// 	query: `query Deep {        # depth 0
-		// 		characters {         # depth 1
-		// 		  id                 # depth 2
-		// 		  name               # depth 2
-		// 		  friends {          # depth 2
-		// 			  id               # depth 3
-		// 			  name             # depth 3
-		// 		  }
-		// 		}
-		// 	}`,
-		// 	wantCost: 6,
-		// },
-		//  {
-		// 	name: "maxDepth+1",
-		// 	query: `query TooDeep {        # depth 0
-		// 		characters {         # depth 1
-		// 		  id                 # depth 2
-		// 		  name               # depth 2
-		// 		  friends {          # depth 2
-		// 				friends {    # depth 3
-		// 				  friends {  # depth 4
-		// 					id       # depth 5
-		// 					name     # depth 5
-		// 				  }
-		// 				}
-		// 			}
-		// 		}
-		// 	}`,
-		// 	wantCost: 8,
-		// },
+		{
+			name: "useMultipliers false on one field",
+			query: `
+			query {
+				characters {
+				  ... on Character {
+					bestFriends(first: 5) {
+						totalCount
+						nodes {
+							...friendsFields
+						}
+					}
+				  }
+				}
+			  }
+			  
+			  fragment friendsFields on Character {
+				id
+				name
+			  }
+		`,
+			wantCost: (1+2)*5 + 1 + 3 + 1,
+		},
+		{
+			name: "takes complexity from interface if type has no annotation",
+			query: `
+			query {
+				characters {
+				  ... on Enemy {
+				    name
+				  }
+				}
+			  }
+		`,
+			wantCost: 1 + 1,
+		},
+		{
+			name: "sums up multipliers",
+			query: `
+			query {
+				characters {
+				  ... on Character {
+				    friends(first: 5, last: 10) {
+						name # This field costs less than if it was requested on the Character itself. I think this is fine though, user needs to take care of precedence.
+					}
+				  }
+				}
+			  }
+		`,
+			wantCost: 1*(5+10) + 1,
+		},
+		{
+			name: "cost from fragment",
+			query: `
+			query {
+				characters {
+				  ...CharacterFields
+				}
+			  }
+
+			  fragment CharacterFields on Character {
+				  id
+				  name
+			  }
+		`,
+			wantCost: (1 + 2) + 1,
+		},
+		{
+			name: "cost from fragment on interface",
+			query: `
+			query {
+				characters {
+				  ...FriendFields
+				}
+			  }
+
+			  fragment FriendFields on Friend {
+				  name
+			  }
+		`,
+			wantCost: (1) + 1,
+		},
+		{
+			name: "takes cost from more expensive union type",
+			query: `
+			query {
+				characters {
+				  ... on Friend {
+					  name
+				  }
+				  ... on Enemy {
+					  weapon
+				  }
+				}
+			  }
+		`,
+			wantCost: (9) + 1,
+		},
 	} {
 		tc.Run(t, s)
 	}
+
+	t.Run("correctly fails query if cost is too high", func(t *testing.T) {
+		doc, err := query.Parse(`query { characters { ... on Character { friends(first: 100) { name } } } }`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Cost of the query is 101, should fail if 100 is the limit.
+		errs := Validate(s, doc, nil, 0, 100)
+		if len(errs) != 1 {
+			t.Fatalf("got incorrect amount of errors back: %d", len(errs))
+		}
+	})
 }
 
 // func TestCostInlineFragments(t *testing.T) {

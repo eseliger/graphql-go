@@ -63,7 +63,7 @@ func newContext(s *schema.Schema, doc *query.Document, maxDepth int) *context {
 	}
 }
 
-func Validate(s *schema.Schema, doc *query.Document, variables map[string]interface{}, maxDepth int) []*errors.QueryError {
+func Validate(s *schema.Schema, doc *query.Document, variables map[string]interface{}, maxDepth, maxCost int) []*errors.QueryError {
 	c := newContext(s, doc, maxDepth)
 
 	opNames := make(nameSet)
@@ -80,8 +80,8 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 			return c.errs
 		}
 
-		if cost := estimateCost(opc, op.Selections, map[string]int{}, getEntryPoint(c.schema, op)); cost > 100 {
-			c.addErr(op.Loc, "MaxDepthExceeded", "The query cost is too high. Permitted: %d, was: %d", 100, cost)
+		if cost := estimateCost(opc, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
+			c.addErr(op.Loc, "MaxDepthExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
 			return c.errs
 		}
 
@@ -987,26 +987,33 @@ func (s visitedSels) copy() visitedSels {
 	return newSels
 }
 
-func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t schema.NamedType) int {
+func estimateCost(c *opContext, sels []query.Selection, t schema.NamedType) int {
+	return estimateCostImpl(c, sels, t, 1)
+}
+
+func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, parentMultiplier int) int {
 	fields := fields(t)
 
-	isUnion := false
-	unionNames := make([]string, 0)
-	if union, ok := t.(*schema.Union); ok {
-		isUnion = true
-		for _, t := range union.PossibleTypes {
-			unionNames = append(unionNames, t.Name)
-		}
-	}
-	if len(unionNames) > 0 {
-		fmt.Printf("Union names: %+v\n", unionNames)
-	}
+	_, isUnion := t.(*schema.Union)
 
 	unionCosts := make([]int, 0)
 	cost := 0
+
+	directlyAccessedUnionFields := make([]query.Selection, 0)
+	if isUnion {
+		for _, sel := range sels {
+			if s, ok := sel.(*query.Field); ok {
+				directlyAccessedUnionFields = append(directlyAccessedUnionFields, s)
+			}
+		}
+	}
+
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *query.Field:
+			if isUnion {
+				continue
+			}
 			fieldName := sel.Name.Name
 			switch fieldName {
 			case "__typename", "__type", "__schema":
@@ -1016,7 +1023,24 @@ func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t s
 			var multiplier int32 = 1
 
 			if f := fields.Get(fieldName); f != nil {
-				if d := f.Directives.Get("cost"); d != nil {
+				useMultipliers := true
+				d := f.Directives.Get("cost")
+				// If no annotation found, check if we are looking at something that implements an interface,
+				// then we need to check if the interface property has an annotation.
+				if d == nil {
+					if parentObj, ok := t.(*schema.Object); ok {
+						for _, iface := range parentObj.Interfaces {
+							ifaceF := iface.Fields.Get(fieldName)
+							if ifaceF != nil {
+								d = ifaceF.Directives.Get("cost")
+								if d != nil {
+									break
+								}
+							}
+						}
+					}
+				}
+				if d != nil {
 					if complexity, ok := d.Args.Get("complexity"); ok && complexity != nil {
 						fc := complexity.Value(map[string]interface{}{})
 						fieldCost = fc.(int32)
@@ -1037,34 +1061,36 @@ func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t s
 							multiplier--
 						}
 					}
-				}
-				v := visited.copy()
-
-				if depth, ok := v[f.Type.String()]; ok {
-					v[f.Type.String()] = depth + 1
-				} else {
-					v[f.Type.String()] = 1
+					if m, ok := d.Args.Get("useMultipliers"); ok && m != nil {
+						mps := m.Value(map[string]interface{}{})
+						useMultipliers = mps.(bool)
+					}
 				}
 
-				currentDepth := v[f.Type.String()]
-				if currentDepth > 100 {
-					c.addErr(sel.Alias.Loc, "MaxDepthRecursionExceeded",
-						"The query exceeds the maximum depth recursion of %d. Actual is %d.",
-						100, currentDepth)
-					println("##################### returned crap")
-					return -1
-				}
-				childCost := estimateCost(c, sel.Selections, v, unwrapType(f.Type))
+				childCost := estimateCostImpl(c, sel.Selections, unwrapType(f.Type), int(multiplier))
 				oldCost := cost
-				cost += (childCost + int(fieldCost)) * int(multiplier)
-				fmt.Printf("Field: %q, Field cost: %d, multiplier: %d, child cost: %d, old cost: %d, new cost: %d\n", f.Name, fieldCost, multiplier, childCost, oldCost, cost)
+				selCost := childCost + int(fieldCost)
+				if useMultipliers {
+					selCost = selCost * parentMultiplier
+				}
+				cost += selCost
+				fmt.Printf("Field: %q, Field cost: %d, parent multiplier: %d, multiplier: %d, child cost: %d, old cost: %d, new cost: %d\n", f.Name, fieldCost, parentMultiplier, multiplier, childCost, oldCost, cost)
 			}
 		case *query.InlineFragment:
 			frag := c.schema.Types[sel.On.Name]
 			if frag == nil {
 				fmt.Printf(" NO INLINE FRAG FOUND %q\n", sel.On.Name)
+				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.On.Name)
+				continue
 			}
-			cost += estimateCost(c, sel.Selections, visited, frag)
+			selections := make([]query.Selection, 0)
+			selections = append(selections, sel.Selections...)
+			selections = append(selections, directlyAccessedUnionFields...)
+			cost += estimateCostImpl(c, selections, frag, parentMultiplier)
+			if isUnion {
+				unionCosts = append(unionCosts, cost)
+				cost = 0
+			}
 		case *query.FragmentSpread:
 			frag := c.doc.Fragments.Get(sel.Name.Name)
 			if frag == nil {
@@ -1072,12 +1098,14 @@ func estimateCost(c *opContext, sels []query.Selection, visited visitedSels, t s
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.Name.Name)
 				continue
 			}
-			fmt.Printf("Fragment type: %+v, fragment name: %q\n", c.schema.Types[frag.On.Name], frag.On.Name)
-			cost += estimateCost(c, frag.Selections, visited, c.schema.Types[frag.On.Name])
-		}
-		if isUnion {
-			unionCosts = append(unionCosts, cost)
-			cost = 0
+			selections := make([]query.Selection, 0)
+			selections = append(selections, frag.Selections...)
+			selections = append(selections, directlyAccessedUnionFields...)
+			cost += estimateCostImpl(c, selections, c.schema.Types[frag.On.Name], parentMultiplier)
+			if isUnion {
+				unionCosts = append(unionCosts, cost)
+				cost = 0
+			}
 		}
 	}
 	if isUnion {

@@ -65,6 +65,7 @@ type Schema struct {
 	res    *resolvable.Schema
 
 	maxDepth              int
+	maxCost               int
 	maxParallelism        int
 	tracer                trace.Tracer
 	validationTracer      trace.ValidationTracer
@@ -151,7 +152,7 @@ func (s *Schema) Validate(queryString string) []*errors.QueryError {
 		return []*errors.QueryError{qErr}
 	}
 
-	return validation.Validate(s.schema, doc, nil, s.maxDepth)
+	return validation.Validate(s.schema, doc, nil, s.maxDepth, s.maxCost)
 }
 
 // Exec executes the given query with the schema's resolver. It panics if the schema was created
@@ -171,7 +172,7 @@ func (s *Schema) exec(ctx context.Context, queryString string, operationName str
 	}
 
 	validationFinish := s.validationTracer.TraceValidation()
-	errs := validation.Validate(s.schema, doc, variables, s.maxDepth)
+	errs := validation.Validate(s.schema, doc, variables, s.maxDepth, s.maxCost)
 	validationFinish(errs)
 	if len(errs) != 0 {
 		return &Response{Errors: errs}

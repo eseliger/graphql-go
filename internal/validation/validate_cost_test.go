@@ -49,9 +49,10 @@ directive @cost(
 )
 
 type costTestCase struct {
-	name     string
-	query    string
-	wantCost int
+	name      string
+	query     string
+	variables map[string]interface{}
+	wantCost  int
 }
 
 func (tc costTestCase) Run(t *testing.T, s *schema.Schema) {
@@ -65,7 +66,7 @@ func (tc costTestCase) Run(t *testing.T, s *schema.Schema) {
 		op := doc.Operations[0]
 		opc := &opContext{c, []*query.Operation{op}}
 
-		cost := estimateCost(opc, op.Selections, getEntryPoint(c.schema, op))
+		cost := estimateCost(opc, tc.variables, op.Selections, getEntryPoint(c.schema, op))
 		if have, want := cost, tc.wantCost; have != want {
 			t.Fatalf("Got incorrect cost estimate, have=%d want=%d", have, want)
 		}
@@ -286,6 +287,122 @@ func TestCost(t *testing.T) {
 			  }
 		`,
 			wantCost: 1 + 1,
+		},
+		{
+			name: "doesn't charge for skip true",
+			query: `
+			query {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @skip(if: true) # costs 2, but should be skipped
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 1,
+		},
+		{
+			name: "does charge for skip false",
+			query: `
+			query {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @skip(if: false) # costs 2
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 2 + 1,
+		},
+		{
+			name: "does charge for include true",
+			query: `
+			query {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @include(if: true) # costs 2
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 2 + 1,
+		},
+		{
+			name: "doesn't charge for include false",
+			query: `
+			query {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @include(if: false) # costs 2, but should not be included in cost
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 1,
+		},
+		{
+			name: "doesn't charge for skip true from variable",
+			query: `
+			query ($skip: Boolean!) {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @skip(if: $skip) # costs 2, but should be skipped
+					}
+				}
+			  }
+		`,
+			variables: map[string]interface{}{"skip": true},
+			wantCost:  1 + 1,
+		},
+		{
+			name: "does charge for skip false from variable",
+			query: `
+			query ($skip: Boolean!) {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @skip(if: $skip) # costs 2
+					}
+				}
+			  }
+		`,
+			variables: map[string]interface{}{"skip": false},
+			wantCost:  1 + 2 + 1,
+		},
+		{
+			name: "does charge for include true from variable",
+			query: `
+			query ($include: Boolean!) {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @include(if: $include) # costs 2
+					}
+				}
+			  }
+		`,
+			variables: map[string]interface{}{"include": true},
+			wantCost:  1 + 2 + 1,
+		},
+		{
+			name: "doesn't charge for include false from variable",
+			query: `
+			query ($include: Boolean!) {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						name @include(if: $include) # costs 2, but should not be included in cost
+					}
+				}
+			  }
+		`,
+			variables: map[string]interface{}{"include": false},
+			wantCost:  1 + 1,
 		},
 	} {
 		tc.Run(t, s)

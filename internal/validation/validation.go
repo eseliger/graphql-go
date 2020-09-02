@@ -81,7 +81,7 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 			return c.errs
 		}
 
-		if cost := estimateCost(opc, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
+		if cost := estimateCost(opc, variables, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
 			c.addErr(op.Loc, "MaxDepthExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
 			return c.errs
 		}
@@ -977,11 +977,11 @@ func getEntryPoint(s *schema.Schema, op *query.Operation) schema.NamedType {
 	return entryPoint
 }
 
-func estimateCost(c *opContext, sels []query.Selection, t schema.NamedType) int {
-	return estimateCostImpl(c, sels, t, 1)
+func estimateCost(c *opContext, requestVariables map[string]interface{}, sels []query.Selection, t schema.NamedType) int {
+	return estimateCostImpl(c, requestVariables, sels, t, 1)
 }
 
-func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, parentMultiplier int) int {
+func estimateCostImpl(c *opContext, requestVariables map[string]interface{}, sels []query.Selection, t schema.NamedType, parentMultiplier int) int {
 	fields := fields(t)
 
 	_, isUnion := t.(*schema.Union)
@@ -1007,6 +1007,12 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *query.Field:
+			if readSkip(sel.Directives, requestVariables) {
+				continue
+			}
+			if !readInclude(sel.Directives, requestVariables) {
+				continue
+			}
 			if isUnion {
 				directlyAccessedUnionFields = append(directlyAccessedUnionFields, sel)
 				continue
@@ -1058,7 +1064,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 					useMultipliers = readUseMultipliers(d)
 				}
 
-				childCost := estimateCostImpl(c, sel.Selections, unwrapType(f.Type), int(multiplier))
+				childCost := estimateCostImpl(c, requestVariables, sel.Selections, unwrapType(f.Type), int(multiplier))
 				oldCost := cost
 				selCost := childCost + int(fieldCost)
 				if useMultipliers {
@@ -1068,6 +1074,12 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 				fmt.Printf("Field: %q, Field cost: %d, parent multiplier: %d, multiplier: %d, child cost: %d, old cost: %d, new cost: %d\n", f.Name, fieldCost, parentMultiplier, multiplier, childCost, oldCost, cost)
 			}
 		case *query.InlineFragment:
+			if readSkip(sel.Directives, requestVariables) {
+				continue
+			}
+			if !readInclude(sel.Directives, requestVariables) {
+				continue
+			}
 			frag := c.schema.Types[sel.On.Name]
 			if frag == nil {
 				fmt.Printf(" NO INLINE FRAG FOUND %q\n", sel.On.Name)
@@ -1078,13 +1090,19 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 			selections := make([]query.Selection, 0)
 			selections = append(selections, sel.Selections...)
 			selections = append(selections, directlyAccessedUnionFields...)
-			unionCost := estimateCostImpl(c, selections, frag, parentMultiplier)
+			unionCost := estimateCostImpl(c, requestVariables, selections, frag, parentMultiplier)
 			if isUnion {
 				unionCosts = append(unionCosts, unionCost)
 			} else {
 				cost += unionCost
 			}
 		case *query.FragmentSpread:
+			if readSkip(sel.Directives, requestVariables) {
+				continue
+			}
+			if !readInclude(sel.Directives, requestVariables) {
+				continue
+			}
 			frag := c.doc.Fragments.Get(sel.Name.Name)
 			if frag == nil {
 				println("####################### OG NO")
@@ -1095,7 +1113,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 			selections := make([]query.Selection, 0)
 			selections = append(selections, frag.Selections...)
 			selections = append(selections, directlyAccessedUnionFields...)
-			unionCost := estimateCostImpl(c, selections, c.schema.Types[frag.On.Name], parentMultiplier)
+			unionCost := estimateCostImpl(c, requestVariables, selections, c.schema.Types[frag.On.Name], parentMultiplier)
 			if isUnion {
 				unionCosts = append(unionCosts, unionCost)
 			} else {
@@ -1118,6 +1136,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 
 func readComplexity(d *common.Directive) int32 {
 	if complexity, ok := d.Args.Get("complexity"); ok && complexity != nil {
+		// Request variables not used for determining value of document directive.
 		fc := complexity.Value(map[string]interface{}{})
 		return fc.(int32)
 	}
@@ -1127,8 +1146,37 @@ func readComplexity(d *common.Directive) int32 {
 
 func readUseMultipliers(d *common.Directive) bool {
 	if m, ok := d.Args.Get("useMultipliers"); ok && m != nil {
+		// Request variables not used for determining value of document directive.
 		mps := m.Value(map[string]interface{}{})
 		return mps.(bool)
+	}
+	// The default is true.
+	return true
+}
+
+func readSkip(ds common.DirectiveList, variables map[string]interface{}) bool {
+	d := ds.Get("skip")
+	if d != nil {
+		if lit, ok := d.Args.Get("if"); ok {
+			val := lit.Value(variables)
+			if skip, ok := val.(bool); ok {
+				return skip
+			}
+		}
+	}
+	// The default is false.
+	return false
+}
+
+func readInclude(ds common.DirectiveList, variables map[string]interface{}) bool {
+	d := ds.Get("include")
+	if d != nil {
+		if lit, ok := d.Args.Get("if"); ok {
+			val := lit.Value(variables)
+			if skip, ok := val.(bool); ok {
+				return skip
+			}
+		}
 	}
 	// The default is true.
 	return true

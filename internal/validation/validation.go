@@ -986,6 +986,10 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 
 	_, isUnion := t.(*schema.Union)
 
+	// if !isUnion {
+	// 	_, isUnion = t.(*schema.Interface)
+	// }
+
 	unionCosts := make([]int, 0)
 	cost := 0
 
@@ -1070,13 +1074,15 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.On.Name)
 				continue
 			}
+			// Combine selections on the fragment and the ones that come from directly accessing the interface.
 			selections := make([]query.Selection, 0)
 			selections = append(selections, sel.Selections...)
 			selections = append(selections, directlyAccessedUnionFields...)
-			cost += estimateCostImpl(c, selections, frag, parentMultiplier)
+			unionCost := estimateCostImpl(c, selections, frag, parentMultiplier)
 			if isUnion {
-				unionCosts = append(unionCosts, cost)
-				cost = 0
+				unionCosts = append(unionCosts, unionCost)
+			} else {
+				cost += unionCost
 			}
 		case *query.FragmentSpread:
 			frag := c.doc.Fragments.Get(sel.Name.Name)
@@ -1085,13 +1091,15 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.Name.Name)
 				continue
 			}
+			// Combine selections on the fragment and the ones that come from directly accessing the interface.
 			selections := make([]query.Selection, 0)
 			selections = append(selections, frag.Selections...)
 			selections = append(selections, directlyAccessedUnionFields...)
-			cost += estimateCostImpl(c, selections, c.schema.Types[frag.On.Name], parentMultiplier)
+			unionCost := estimateCostImpl(c, selections, c.schema.Types[frag.On.Name], parentMultiplier)
 			if isUnion {
-				unionCosts = append(unionCosts, cost)
-				cost = 0
+				unionCosts = append(unionCosts, unionCost)
+			} else {
+				cost += unionCost
 			}
 		}
 	}
@@ -1103,7 +1111,7 @@ func estimateCostImpl(c *opContext, sels []query.Selection, t schema.NamedType, 
 			}
 		}
 		fmt.Printf("Was union, returning biggest potential cost. maxCost=%d, unionCosts=%+v\n", maxCost, unionCosts)
-		return maxCost
+		return maxCost + cost
 	}
 	return cost
 }

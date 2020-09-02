@@ -21,6 +21,7 @@ directive @cost(
 
 	type Query {
 		characters: [FriendOrEnemy]! @cost(complexity: 1)
+		friend(id: ID!): Friend!
 	}
 
 	interface Friend {
@@ -256,6 +257,35 @@ func TestCost(t *testing.T) {
 			  }
 		`,
 			wantCost: (9) + (1) + 1,
+		},
+		{
+			name: "interface merging",
+			query: `
+			query {
+				friend {
+					... on Character { # total cost including outer fields: 1 + 2 = 3
+						id # cost 1
+						# name costs 2 on Characters, so taking that cost.
+					}
+					... on Enemy { # total cost including outer fields: 9 + 1 = 10
+						weapon # cost 9
+					}
+					name # cost 1 on interface
+				}
+			  }
+		`,
+			wantCost: (9) + (1),
+		},
+		{
+			name: "union without fragments",
+			query: `
+			query {
+				characters {
+					name # cost 1 on interface
+				}
+			  }
+		`,
+			wantCost: 1 + 1,
 		},
 	} {
 		tc.Run(t, s)

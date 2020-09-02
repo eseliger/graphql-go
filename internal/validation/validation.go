@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"text/scanner"
@@ -993,28 +992,17 @@ func estimateCostImpl(c *opContext, requestVariables map[string]interface{}, sel
 	unionCosts := make([]int, 0)
 	cost := 0
 
-	directlyAccessedUnionFields := make([]query.Selection, 0)
-
-	// Sort the selection to always process all fields first, to be sure
-	// that all directlyAccessedUnionFields have been visited by the time a fragment occurs.
-	sort.Slice(sels, func(i, j int) bool {
-		if _, ok := sels[i].(*query.Field); ok {
-			return true
-		}
-		return false
-	})
-
 	for _, sel := range sels {
 		switch sel := sel.(type) {
 		case *query.Field:
+			if isUnion {
+				// Field access on a Union is not allowed, validator should complain.
+				continue
+			}
 			if readSkip(sel.Directives, requestVariables) {
 				continue
 			}
 			if !readInclude(sel.Directives, requestVariables) {
-				continue
-			}
-			if isUnion {
-				directlyAccessedUnionFields = append(directlyAccessedUnionFields, sel)
 				continue
 			}
 			fieldName := sel.Name.Name
@@ -1086,11 +1074,7 @@ func estimateCostImpl(c *opContext, requestVariables map[string]interface{}, sel
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.On.Name)
 				continue
 			}
-			// Combine selections on the fragment and the ones that come from directly accessing the interface.
-			selections := make([]query.Selection, 0)
-			selections = append(selections, sel.Selections...)
-			selections = append(selections, directlyAccessedUnionFields...)
-			unionCost := estimateCostImpl(c, requestVariables, selections, frag, parentMultiplier)
+			unionCost := estimateCostImpl(c, requestVariables, sel.Selections, frag, parentMultiplier)
 			if isUnion {
 				unionCosts = append(unionCosts, unionCost)
 			} else {
@@ -1109,11 +1093,7 @@ func estimateCostImpl(c *opContext, requestVariables map[string]interface{}, sel
 				c.addErr(sel.Loc, "CostAnalysisError", "Unknown fragment %q. Unable to evaluate cost.", sel.Name.Name)
 				continue
 			}
-			// Combine selections on the fragment and the ones that come from directly accessing the interface.
-			selections := make([]query.Selection, 0)
-			selections = append(selections, frag.Selections...)
-			selections = append(selections, directlyAccessedUnionFields...)
-			unionCost := estimateCostImpl(c, requestVariables, selections, c.schema.Types[frag.On.Name], parentMultiplier)
+			unionCost := estimateCostImpl(c, requestVariables, frag.Selections, c.schema.Types[frag.On.Name], parentMultiplier)
 			if isUnion {
 				unionCosts = append(unionCosts, unionCost)
 			} else {

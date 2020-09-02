@@ -87,7 +87,6 @@ func TestCost(t *testing.T) {
 			query: `
 			query Okay {
 				characters {
-				  name
 				  ... on Character {
 				  id
 				  friends(first: 4, last: 2) {
@@ -125,7 +124,7 @@ func TestCost(t *testing.T) {
 			  }
 			  
 		`,
-			wantCost: 82,
+			wantCost: 80,
 		},
 		{
 			name: "useMultipliers false on one field",
@@ -226,40 +225,6 @@ func TestCost(t *testing.T) {
 			wantCost: (9) + 1,
 		},
 		{
-			name: "takes complexity for whole union when also querying fields outside of fragment",
-			query: `
-			query {
-				characters {
-				  name
-				  ... on Character {
-					  id
-				  }
-				  ... on Enemy {
-					  weapon
-				  }
-				}
-			  }
-		`,
-			wantCost: (9) + (1) + 1,
-		},
-		{
-			name: "takes complexity for whole union when also querying fields outside of fragment, below",
-			query: `
-			query {
-				characters {
-					... on Character {
-						id
-					}
-					... on Enemy {
-						weapon
-					}
-					name
-				}
-			  }
-		`,
-			wantCost: (9) + (1) + 1,
-		},
-		{
 			name: "interface merging",
 			query: `
 			query {
@@ -276,17 +241,6 @@ func TestCost(t *testing.T) {
 			  }
 		`,
 			wantCost: (9) + (1),
-		},
-		{
-			name: "union without fragments",
-			query: `
-			query {
-				characters {
-					name # cost 1 on interface
-				}
-			  }
-		`,
-			wantCost: 1 + 1,
 		},
 		{
 			name: "doesn't charge for skip true",

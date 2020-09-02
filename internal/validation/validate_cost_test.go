@@ -298,8 +298,24 @@ func TestCost(t *testing.T) {
 						name @skip(if: true) # costs 2, but should be skipped
 					}
 				}
-			  }
-		`,
+			}
+			`,
+			wantCost: 1 + 1,
+		},
+		{
+			name: "doesn't charge for skip true on inline fragment",
+			query: `
+				query {
+					characters { # costs 1
+						... on Character {
+							id # costs 1
+							... @skip(if: true) {
+								name # costs 2, but should be skipped
+							}
+						}
+					}
+				}
+			`,
 			wantCost: 1 + 1,
 		},
 		{
@@ -338,6 +354,22 @@ func TestCost(t *testing.T) {
 					... on Character {
 						id # costs 1
 						name @include(if: false) # costs 2, but should not be included in cost
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 1,
+		},
+		{
+			name: "doesn't charge for include false on inline fragment",
+			query: `
+			query {
+				characters { # costs 1
+					... on Character {
+						id # costs 1
+						... @include(if: false) {
+							name # costs 2, but should be skipped
+						}
 					}
 				}
 			  }

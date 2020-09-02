@@ -80,11 +80,6 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 			return c.errs
 		}
 
-		if cost := estimateCost(opc, variables, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
-			c.addErr(op.Loc, "MaxDepthExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
-			return c.errs
-		}
-
 		if op.Name.Name == "" && len(doc.Operations) != 1 {
 			c.addErr(op.Loc, "LoneAnonymousOperation", "This anonymous operation must be the only defined operation.")
 		}
@@ -168,6 +163,14 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 				}
 				c.addErr(v.Loc, "NoUnusedVariables", "Variable %q is never used%s.", "$"+v.Name.Name, opSuffix)
 			}
+		}
+	}
+
+	for _, op := range doc.Operations {
+		opc := &opContext{c, []*query.Operation{op}}
+		if cost := estimateCost(opc, variables, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
+			c.addErr(op.Loc, "MaxCostExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
+			return c.errs
 		}
 	}
 
@@ -983,11 +986,10 @@ func estimateCost(c *opContext, requestVariables map[string]interface{}, sels []
 func estimateCostImpl(c *opContext, requestVariables map[string]interface{}, sels []query.Selection, t schema.NamedType, parentMultiplier int) int {
 	fields := fields(t)
 
+	// Unions must have explicit fragments defined, so we need to watch for the most expensive union member.
 	_, isUnion := t.(*schema.Union)
 
-	// if !isUnion {
-	// 	_, isUnion = t.(*schema.Interface)
-	// }
+	// _, isInterface := t.(*schema.Interface)
 
 	unionCosts := make([]int, 0)
 	cost := 0

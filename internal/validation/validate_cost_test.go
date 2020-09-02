@@ -243,6 +243,22 @@ func TestCost(t *testing.T) {
 			wantCost: (9) + (1),
 		},
 		{
+			name: "union cost correct with 2 fragments on same type",
+			query: `
+			query {
+				characters { # cost 1
+					... on Character {
+						id # cost 1
+					}
+					... on Character {
+						name # cost 2
+					}
+				}
+			  }
+		`,
+			wantCost: 1 + 2 + 1,
+		},
+		{
 			name: "doesn't charge for skip true",
 			query: `
 			query {

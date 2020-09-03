@@ -1768,6 +1768,55 @@ func TestTypeName(t *testing.T) {
 	})
 }
 
+func TestUnionMerge(t *testing.T) {
+	gqltesting.RunTests(t, []*gqltesting.Test{
+		{
+			Schema: starwarsSchema,
+			Query: `
+				{
+					search(text: "an") {
+						__typename
+						... on Character {
+							name
+						}
+						... on Human {
+							height
+						}
+						... on Droid {
+							primaryFunction
+						}
+						... on Starship {
+							id
+							length
+						}
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"search": [
+						{
+							"__typename": "Human",
+							"name": "Han Solo",
+							"height": 1.8
+						},
+						{
+							"__typename": "Human",
+							"name": "Leia Organa",
+							"height": 1.5
+						},
+						{
+							"__typename": "Starship",
+							"id": "3002",
+							"length": 9.2
+						}
+					]
+				}
+			`,
+		},
+	})
+}
+
 func TestConnections(t *testing.T) {
 	gqltesting.RunTests(t, []*gqltesting.Test{
 		{
@@ -2926,7 +2975,7 @@ func TestInput(t *testing.T) {
 	})
 }
 
-type inputArgumentsHello struct {}
+type inputArgumentsHello struct{}
 
 type inputArgumentsScalarMismatch1 struct{}
 
@@ -2946,7 +2995,7 @@ type helloInputMismatch struct {
 	World string
 }
 
-func (r *inputArgumentsHello) Hello(args struct { Input *helloInput }) string {
+func (r *inputArgumentsHello) Hello(args struct{ Input *helloInput }) string {
 	return "Hello " + args.Input.Name + "!"
 }
 
@@ -2954,7 +3003,7 @@ func (r *inputArgumentsScalarMismatch1) Hello(name string) string {
 	return "Hello " + name + "!"
 }
 
-func (r *inputArgumentsScalarMismatch2) Hello(args struct { World string }) string {
+func (r *inputArgumentsScalarMismatch2) Hello(args struct{ World string }) string {
 	return "Hello " + args.World + "!"
 }
 
@@ -2962,11 +3011,11 @@ func (r *inputArgumentsObjectMismatch1) Hello(in helloInput) string {
 	return "Hello " + in.Name + "!"
 }
 
-func (r *inputArgumentsObjectMismatch2) Hello(args struct { Input *helloInputMismatch }) string {
+func (r *inputArgumentsObjectMismatch2) Hello(args struct{ Input *helloInputMismatch }) string {
 	return "Hello " + args.Input.World + "!"
 }
 
-func (r *inputArgumentsObjectMismatch3) Hello(args struct { Input *struct { Thing string } }) string {
+func (r *inputArgumentsObjectMismatch3) Hello(args struct{ Input *struct{ Thing string } }) string {
 	return "Hello " + args.Input.Thing + "!"
 }
 

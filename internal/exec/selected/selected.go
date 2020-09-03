@@ -173,15 +173,84 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 }
 
 func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag *query.Fragment) []Selection {
-	if frag.On.Name != "" && frag.On.Name != e.Name {
-		a, ok := e.TypeAssertions[frag.On.Name]
-		if !ok {
-			panic(fmt.Errorf("%q does not implement %q", frag.On, e.Name)) // TODO proper error handling
+	applicableParentTypes := make(map[string]*schema.Object, 0)
+	parentType, ok := r.Schema.Types[e.Name]
+	if !ok {
+		panic(fmt.Errorf("cannot find type %q", e.Name))
+	}
+	switch pt := parentType.(type) {
+	case *schema.Union:
+		for _, t := range pt.PossibleTypes {
+			applicableParentTypes[t.Name] = t
 		}
+	case *schema.Object:
+		applicableParentTypes[pt.Name] = pt
+	case *schema.Interface:
+		for _, t := range pt.PossibleTypes {
+			applicableParentTypes[t.Name] = t
+		}
+	}
 
+	applicableFragmentTypes := make(map[string]*schema.Object, 0)
+	fragmentType := r.Schema.Resolve(frag.On.Name)
+	switch pt := fragmentType.(type) {
+	case *schema.Union:
+		for _, t := range pt.PossibleTypes {
+			applicableFragmentTypes[t.Name] = t
+		}
+	case *schema.Object:
+		applicableFragmentTypes[pt.Name] = pt
+	case *schema.Interface:
+		for _, t := range pt.PossibleTypes {
+			applicableFragmentTypes[t.Name] = t
+		}
+	}
+
+	applicableTypes := make(map[string]*schema.Object, 0)
+	for k, t := range applicableFragmentTypes {
+		if _, ok := applicableParentTypes[k]; ok {
+			applicableTypes[k] = t
+		}
+	}
+
+	if len(applicableTypes) == 0 {
+		panic(fmt.Errorf("applicable types were empty"))
+	}
+
+	// If is not an inline spread
+	if frag.On.Name != "" && frag.On.Name != e.Name {
+		// If is interface, need to find the implementing object.
+		if iface, ok := fragmentType.(*schema.Interface); ok {
+			for _, t := range iface.PossibleTypes {
+				for _, i := range t.Interfaces {
+					if i.Name == frag.On.Name {
+						a, ok := applicableTypes[t.Name]
+						if !ok {
+							panic(fmt.Errorf("invalid type spread on %q for fragment %q, applicableTypes: %+v. Available type assertions: %+v", e.Name, frag.On.Name, applicableTypes, e.TypeAssertions))
+						}
+						ta, ok := e.TypeAssertions[a.Name]
+						if !ok {
+							panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
+						}
+						return []Selection{&TypeAssertion{
+							TypeAssertion: *ta,
+							Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
+						}}
+					}
+				}
+			}
+		}
+		a, ok := applicableTypes[frag.On.Name]
+		if !ok {
+			panic(fmt.Errorf("invalid type spread on %q for fragment %q, applicableTypes: %+v. Available type assertions: %+v", e.Name, frag.On.Name, applicableTypes, e.TypeAssertions))
+		}
+		ta, ok := e.TypeAssertions[a.Name]
+		if !ok {
+			panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
+		}
 		return []Selection{&TypeAssertion{
-			TypeAssertion: *a,
-			Sels:          applySelectionSet(r, s, a.TypeExec.(*resolvable.Object), frag.Selections),
+			TypeAssertion: *ta,
+			Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
 		}}
 	}
 	return applySelectionSet(r, s, e, frag.Selections)

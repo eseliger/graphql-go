@@ -221,24 +221,27 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 	if frag.On.Name != "" && frag.On.Name != e.Name {
 		// If is interface, need to find the implementing object.
 		if iface, ok := fragmentType.(*schema.Interface); ok {
+			selections := []Selection{}
 			for _, t := range iface.PossibleTypes {
 				for _, i := range t.Interfaces {
 					if i.Name == frag.On.Name {
 						a, ok := applicableTypes[t.Name]
 						if !ok {
-							panic(fmt.Errorf("invalid type spread on %q for fragment %q, applicableTypes: %+v. Available type assertions: %+v", e.Name, frag.On.Name, applicableTypes, e.TypeAssertions))
+							// If not a match on a type that is allowed in the union, skip.
+							continue
 						}
 						ta, ok := e.TypeAssertions[a.Name]
 						if !ok {
 							panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
 						}
-						return []Selection{&TypeAssertion{
+						selections = append(selections, &TypeAssertion{
 							TypeAssertion: *ta,
 							Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
-						}}
+						})
 					}
 				}
 			}
+			return selections
 		}
 		a, ok := applicableTypes[frag.On.Name]
 		if !ok {

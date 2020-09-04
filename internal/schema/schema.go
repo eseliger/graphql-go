@@ -240,6 +240,19 @@ type Field struct {
 	Desc       string
 }
 
+func PossibleTypes(t common.Type) []*Object {
+	switch t := t.(type) {
+	case *Object:
+		return []*Object{t}
+	case *Interface:
+		return t.PossibleTypes
+	case *Union:
+		return t.PossibleTypes
+	default:
+		return nil
+	}
+}
+
 // New initializes an instance of Schema.
 func New() *Schema {
 	s := &Schema{

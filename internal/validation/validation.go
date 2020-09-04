@@ -166,13 +166,13 @@ func Validate(s *schema.Schema, doc *query.Document, variables map[string]interf
 		}
 	}
 
-	for _, op := range doc.Operations {
-		opc := &opContext{c, []*query.Operation{op}}
-		if cost := estimateCost(opc, variables, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
-			c.addErr(op.Loc, "MaxCostExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
-			return c.errs
-		}
-	}
+	// for _, op := range doc.Operations {
+	// 	opc := &opContext{c, []*query.Operation{op}}
+	// 	if cost := estimateCost(opc, variables, op.Selections, getEntryPoint(c.schema, op)); cost > maxCost {
+	// 		c.addErr(op.Loc, "MaxCostExceeded", "The query cost is too high. Permitted: %d, was: %d", maxCost, cost)
+	// 		return c.errs
+	// 	}
+	// }
 
 	return c.errs
 }
@@ -375,27 +375,14 @@ func validateSelection(c *opContext, sel query.Selection, t schema.NamedType) {
 }
 
 func compatible(a, b common.Type) bool {
-	for _, pta := range possibleTypes(a) {
-		for _, ptb := range possibleTypes(b) {
+	for _, pta := range schema.PossibleTypes(a) {
+		for _, ptb := range schema.PossibleTypes(b) {
 			if pta == ptb {
 				return true
 			}
 		}
 	}
 	return false
-}
-
-func possibleTypes(t common.Type) []*schema.Object {
-	switch t := t.(type) {
-	case *schema.Object:
-		return []*schema.Object{t}
-	case *schema.Interface:
-		return t.PossibleTypes
-	case *schema.Union:
-		return t.PossibleTypes
-	default:
-		return nil
-	}
 }
 
 func markUsedFragments(c *context, sels []query.Selection, fragUsed map[*query.FragmentDecl]struct{}) {

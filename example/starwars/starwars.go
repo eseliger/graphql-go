@@ -230,6 +230,13 @@ var droids = []*droid{
 		AppearsIn:       []string{"NEWHOPE", "EMPIRE", "JEDI"},
 		PrimaryFunction: "Astromech",
 	},
+	{
+		ID:              "2002",
+		Name:            "Huyang",
+		Friends:         []graphql.ID{"1000", "1002", "1003"},
+		AppearsIn:       []string{"CLONE_WARS"},
+		PrimaryFunction: "Astromech",
+	},
 }
 
 var droidData = make(map[graphql.ID]*droid)

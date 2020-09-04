@@ -1738,6 +1738,10 @@ func TestTypeName(t *testing.T) {
 							"name": "Leia Organa"
 						},
 						{
+							"__typename": "Droid",
+							"name": "Huyang"
+						},
+						{
 							"__typename": "Starship",
 							"name": "TIE Advanced x1"
 						}
@@ -1804,6 +1808,11 @@ func TestUnionMerge(t *testing.T) {
 							"__typename": "Human",
 							"name": "Leia Organa",
 							"height": 1.5
+						},
+						{
+							"__typename": "Droid",
+							"name": "Huyang",
+							"primaryFunction": "Astromech"
 						},
 						{
 							"__typename": "Starship",

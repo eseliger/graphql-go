@@ -173,88 +173,101 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 }
 
 func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag *query.Fragment) []Selection {
-	applicableParentTypes := make(map[string]*schema.Object, 0)
-	parentType, ok := r.Schema.Types[e.Name]
-	if !ok {
-		panic(fmt.Errorf("cannot find type %q", e.Name))
-	}
-	switch pt := parentType.(type) {
-	case *schema.Union:
-		for _, t := range pt.PossibleTypes {
-			applicableParentTypes[t.Name] = t
-		}
-	case *schema.Object:
-		applicableParentTypes[pt.Name] = pt
-	case *schema.Interface:
-		for _, t := range pt.PossibleTypes {
-			applicableParentTypes[t.Name] = t
-		}
-	}
-
-	applicableFragmentTypes := make(map[string]*schema.Object, 0)
-	fragmentType := r.Schema.Resolve(frag.On.Name)
-	switch pt := fragmentType.(type) {
-	case *schema.Union:
-		for _, t := range pt.PossibleTypes {
-			applicableFragmentTypes[t.Name] = t
-		}
-	case *schema.Object:
-		applicableFragmentTypes[pt.Name] = pt
-	case *schema.Interface:
-		for _, t := range pt.PossibleTypes {
-			applicableFragmentTypes[t.Name] = t
-		}
-	}
-
-	applicableTypes := make(map[string]*schema.Object, 0)
-	for k, t := range applicableFragmentTypes {
-		if _, ok := applicableParentTypes[k]; ok {
-			applicableTypes[k] = t
-		}
-	}
-
-	if len(applicableTypes) == 0 {
-		panic(fmt.Errorf("applicable types were empty"))
-	}
-
 	// If is not an inline spread
 	if frag.On.Name != "" && frag.On.Name != e.Name {
-		// If is interface, need to find the implementing object.
-		if iface, ok := fragmentType.(*schema.Interface); ok {
-			selections := []Selection{}
-			for _, t := range iface.PossibleTypes {
-				for _, i := range t.Interfaces {
-					if i.Name == frag.On.Name {
-						a, ok := applicableTypes[t.Name]
-						if !ok {
-							// If not a match on a type that is allowed in the union, skip.
-							continue
-						}
-						ta, ok := e.TypeAssertions[a.Name]
-						if !ok {
-							panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
-						}
-						selections = append(selections, &TypeAssertion{
-							TypeAssertion: *ta,
-							Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
-						})
-					}
+		parentType, ok := r.Schema.Types[e.Name]
+		// If the parent is an interface, only implementing types are allowed,
+		// so we can return the type assertion straight away.
+		if _, ok := parentType.(*schema.Interface); ok {
+			ta, ok := e.TypeAssertions[frag.On.Name]
+			if !ok {
+				panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
+			}
+			return []Selection{&TypeAssertion{
+				TypeAssertion: *ta,
+				Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
+			}}
+		}
+		// Otherwise, it can only be a union, since named fragments on objects aren't allowed.
+
+		// If the fragment type is an object, we can apply the selection straight away,
+		// validation should already have checked that the object is an element of the
+		// allowed types of the union.
+		fragmentType := r.Schema.Resolve(frag.On.Name)
+		if _, ok := fragmentType.(*schema.Object); ok {
+			ta, ok := e.TypeAssertions[frag.On.Name]
+			if !ok {
+				panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
+			}
+			// Need to do a type assertion first, on a union, only one of the types matches,
+			// so N - 1 other types won't match and should not be selected.
+			return []Selection{&TypeAssertion{
+				TypeAssertion: *ta,
+				Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
+			}}
+		}
+
+		// The fragment type needs to be an interface on a union at this point,
+		// we need to first check if the interface applies:
+		// It applies, when at least one of the possible types of the union implements
+		// the interface we're spreading here.
+		applicableParentTypes := make(map[string]*schema.Object, 0)
+		if !ok {
+			panic(fmt.Errorf("cannot find type %q", e.Name))
+		}
+		for _, t := range schema.PossibleTypes(parentType) {
+			applicableParentTypes[t.Name] = t
+		}
+
+		applicableFragmentTypes := make(map[string]*schema.Object, 0)
+		if !ok {
+			panic(fmt.Errorf("cannot find type %q", e.Name))
+		}
+		for _, t := range schema.PossibleTypes(fragmentType) {
+			applicableFragmentTypes[t.Name] = t
+		}
+
+		applicableTypes := make(map[string]*schema.Object, 0)
+		for k, t := range applicableFragmentTypes {
+			if _, ok := applicableParentTypes[k]; ok {
+				applicableTypes[k] = t
+			}
+		}
+
+		// GraphQL spec says: If the intersection of the applicable types of fragment and parent
+		// is an empty set, it doesn't apply. (This is already validated before).
+		if len(applicableTypes) == 0 {
+			panic(fmt.Errorf("applicable types were empty"))
+		}
+
+		// Now, we need to resolve the interface to the possible types.
+		iface := fragmentType.(*schema.Interface) // interface Character
+		// Find all types in the union, that implement the interface.
+		implementingTypes := make([]*schema.Object, 0)
+		for _, t := range iface.PossibleTypes { // Human, Droid implements Character
+			for _, i := range t.Interfaces { // Human implements A, Character | Starship implements A
+				if i.Name == frag.On.Name { // If any of the implementing interfaces is the one we look for, append.
+					implementingTypes = append(implementingTypes, t)
 				}
 			}
-			return selections
 		}
-		a, ok := applicableTypes[frag.On.Name]
-		if !ok {
-			panic(fmt.Errorf("invalid type spread on %q for fragment %q, applicableTypes: %+v. Available type assertions: %+v", e.Name, frag.On.Name, applicableTypes, e.TypeAssertions))
+		// Now we return a selection of type assertions to all the implementing types, so every instance will have those fields selected.
+		selections := make([]Selection, 0)
+		for _, typ := range implementingTypes {
+			a, ok := applicableTypes[typ.Name]
+			if !ok {
+				panic("unknown type")
+			}
+			ta, ok := e.TypeAssertions[a.Name]
+			if !ok {
+				panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
+			}
+			selections = append(selections, &TypeAssertion{
+				TypeAssertion: *ta,
+				Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
+			})
 		}
-		ta, ok := e.TypeAssertions[a.Name]
-		if !ok {
-			panic(fmt.Errorf("unknown type assertion for fragment %q", frag.On.Name))
-		}
-		return []Selection{&TypeAssertion{
-			TypeAssertion: *ta,
-			Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
-		}}
+		return selections
 	}
 	return applySelectionSet(r, s, e, frag.Selections)
 }

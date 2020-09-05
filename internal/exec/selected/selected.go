@@ -247,7 +247,9 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 		for _, t := range iface.PossibleTypes { // Human, Droid implements Character
 			for _, i := range t.Interfaces { // Human implements A, Character | Starship implements A
 				if i.Name == frag.On.Name { // If any of the implementing interfaces is the one we look for, append.
-					implementingTypes = append(implementingTypes, t)
+					if _, ok := applicableFragmentTypes[t.Name]; ok { // If the object is within the union, it is acceptable to expand.
+						implementingTypes = append(implementingTypes, t)
+					}
 				}
 			}
 		}

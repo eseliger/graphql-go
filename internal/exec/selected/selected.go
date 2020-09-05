@@ -256,7 +256,7 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 		for _, typ := range implementingTypes {
 			a, ok := applicableTypes[typ.Name]
 			if !ok {
-				panic("unknown type")
+				panic(fmt.Errorf("unknown type %q", typ.Name))
 			}
 			ta, ok := e.TypeAssertions[a.Name]
 			if !ok {

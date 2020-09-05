@@ -173,11 +173,12 @@ func applySelectionSet(r *Request, s *resolvable.Schema, e *resolvable.Object, s
 }
 
 func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag *query.Fragment) []Selection {
-	// If is not an inline spread
+	// If is not an inline spread, and not a spread on the same type as the parent type.
 	if frag.On.Name != "" && frag.On.Name != e.Name {
-		parentType, ok := r.Schema.Types[e.Name]
+		parentType := r.Schema.Resolve(e.Name)
+		fragmentType := r.Schema.Resolve(frag.On.Name)
 		// If the parent is an interface, only implementing types are allowed,
-		// so we can return the type assertion straight away.
+		// so we can return the type assertion for the object straight away.
 		if _, ok := parentType.(*schema.Interface); ok {
 			ta, ok := e.TypeAssertions[frag.On.Name]
 			if !ok {
@@ -188,12 +189,26 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 				Sels:          applySelectionSet(r, s, ta.TypeExec.(*resolvable.Object), frag.Selections),
 			}}
 		}
-		// Otherwise, it can only be a union, since named fragments on objects aren't allowed.
+		// Otherwise, the parent can be a union or an object.
+		// If it's an object, just apply the selection set.
+		if _, ok := parentType.(*schema.Object); ok {
+			if _, ok := fragmentType.(*schema.Interface); ok {
+				// Assume the object implements the interface. This should already be checked before in the validating steps.
+				return applySelectionSet(r, s, e, frag.Selections)
+			}
+			if _, ok := fragmentType.(*schema.Object); ok {
+				// If is object .. object selection, it cannot match, because names have been compared above already.
+				return nil
+			}
+			// Object ... Union can simply be expanded.
+			return applySelectionSet(r, s, e, frag.Selections)
+		}
+
+		// Otherwise, the parent type can only be a union.
 
 		// If the fragment type is an object, we can apply the selection straight away,
 		// validation should already have checked that the object is an element of the
 		// allowed types of the union.
-		fragmentType := r.Schema.Resolve(frag.On.Name)
 		if _, ok := fragmentType.(*schema.Object); ok {
 			ta, ok := e.TypeAssertions[frag.On.Name]
 			if !ok {
@@ -212,17 +227,11 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 		// It applies, when at least one of the possible types of the union implements
 		// the interface we're spreading here.
 		applicableParentTypes := make(map[string]*schema.Object, 0)
-		if !ok {
-			panic(fmt.Errorf("cannot find type %q", e.Name))
-		}
 		for _, t := range schema.PossibleTypes(parentType) {
 			applicableParentTypes[t.Name] = t
 		}
 
 		applicableFragmentTypes := make(map[string]*schema.Object, 0)
-		if !ok {
-			panic(fmt.Errorf("cannot find type %q", e.Name))
-		}
 		for _, t := range schema.PossibleTypes(fragmentType) {
 			applicableFragmentTypes[t.Name] = t
 		}

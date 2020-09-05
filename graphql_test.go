@@ -1176,6 +1176,114 @@ func TestFragments(t *testing.T) {
 				}
 			`,
 		},
+		{
+			Schema: starwarsSchema,
+			Query: `
+				query {
+					human(id: "1000") {
+						id
+						mass
+						...characterInfo
+					}
+				}
+				fragment characterInfo on Character {
+					name
+					...on Droid {
+						primaryFunction
+					}
+					...on Human {
+						height
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"human": {
+						"id": "1000",
+						"mass": 77,
+						"name": "Luke Skywalker",
+						"height": 1.72
+					}
+				}
+			`,
+		},
+		{
+			Schema: starwarsSchema,
+			Query: `
+				query {
+					human(id: "1000") {
+						... on SearchResult {
+							... on Human {
+								id
+								name
+							}
+						}
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"human": {
+						"id": "1000",
+						"name": "Luke Skywalker"
+					}
+				}
+			`,
+		},
+		{
+			Schema: starwarsSchema,
+			Query: `
+				query {
+					human(id: "1000") {
+						...resultFields
+					}
+				}
+
+				fragment resultFields on SearchResult {
+					... on Human {
+						... on Character {
+							id
+						}
+						name
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"human": {
+						"id": "1000",
+						"name": "Luke Skywalker"
+					}
+				}
+			`,
+		},
+		{
+			Schema: starwarsSchema,
+			Query: `
+				query {
+					human(id: "1000") {
+						...resultFields
+					}
+				}
+
+				fragment resultFields on Character {
+					... on SearchResult {
+						... on Human {
+							id
+							name
+						}
+					}
+				}
+			`,
+			ExpectedResult: `
+				{
+					"human": {
+						"id": "1000",
+						"name": "Luke Skywalker"
+					}
+				}
+			`,
+		},
 	})
 }
 

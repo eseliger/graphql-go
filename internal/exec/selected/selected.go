@@ -244,13 +244,9 @@ func applyFragment(r *Request, s *resolvable.Schema, e *resolvable.Object, frag 
 		iface := fragmentType.(*schema.Interface) // interface Character
 		// Find all types in the union, that implement the interface.
 		implementingTypes := make([]*schema.Object, 0)
-		for _, t := range iface.PossibleTypes { // Human, Droid implements Character
-			for _, i := range t.Interfaces { // Human implements A, Character | Starship implements A
-				if i.Name == frag.On.Name { // If any of the implementing interfaces is the one we look for, append.
-					if _, ok := applicableFragmentTypes[t.Name]; ok { // If the object is within the union, it is acceptable to expand.
-						implementingTypes = append(implementingTypes, t)
-					}
-				}
+		for _, t := range iface.PossibleTypes { // Look over all types that implement the interface.
+			if _, ok := applicableParentTypes[t.Name]; ok { // But only take the ones that satisfy the union.
+				implementingTypes = append(implementingTypes, t)
 			}
 		}
 		// Now we return a selection of type assertions to all the implementing types, so every instance will have those fields selected.
